@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outbreak Explorer — Interactive SIR Story</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+:root{--bg:#f6f7f3;--ink:#1d2a30;--card:#fff;--line:#d9e0dc;--sus:#4c78a8;--inf:#e45756;--rec:#54a24b;--accent:#276749}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+header{padding:24px max(20px,calc((100% - 1200px)/2));background:#183b36;color:white}header h1{margin:0 0 5px;font-size:clamp(1.6rem,4vw,2.5rem)}header p{margin:0;max-width:850px;color:#e0ece8}
+main{max-width:1200px;margin:20px auto;padding:0 16px}.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:14px 0}
+button,select,input{font:inherit}button{border:0;border-radius:8px;padding:9px 14px;background:#276749;color:#fff;cursor:pointer}button.secondary{background:#e2ebe6;color:#183b36}button:hover{filter:brightness(.96)}
+input[type=range]{width:180px;vertical-align:middle}.control{background:white;border:1px solid var(--line);padding:9px 12px;border-radius:9px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;min-width:0;box-shadow:0 2px 8px #102c2210}.card h2{font-size:1.15rem;margin:0 0 4px}.purpose{color:#52645e;font-size:.92rem;margin:0 0 12px}.wide{grid-column:1/-1}.metrics{display:flex;gap:10px;flex-wrap:wrap}.metric{background:#f0f5f2;padding:10px 12px;border-radius:9px;min-width:110px}.metric strong{display:block;font-size:1.2rem}.legend{font-size:.88rem;color:#52645e}.population{display:grid;grid-template-columns:repeat(20,1fr);gap:4px;max-width:620px;margin:12px 0}.person{aspect-ratio:1;border-radius:50%;background:var(--sus);border:1px solid #ffffff}.person.i{background:var(--inf)}.person.r{background:var(--rec)}.network{display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;padding:20px 0}.node{border:2px solid;border-radius:12px;padding:15px 18px;text-align:center}.node.s{border-color:var(--sus)}.node.i{border-color:var(--inf)}.arrow{font-size:1.8rem;color:#52645e}.small{font-size:.88rem;color:#52645e}.status{font-weight:650;color:#276749}.tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:.92rem}th,td{text-align:left;border-bottom:1px solid var(--line);padding:8px}th{background:#f0f5f2}.foot{font-size:.88rem;color:#52645e;margin:22px 0 36px}.checklist label{display:inline-flex;gap:5px;margin:4px 12px 4px 0}
+@media(max-width:760px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}.population{grid-template-columns:repeat(15,1fr)}}
+</style>
+</head>
+<body>
+<header><h1>Outbreak Explorer</h1><p>An interactive six-view story about how transmission and recovery shape an epidemic. Views 1–5 use an explicitly labeled SIR scientific simulation; View 6 loads real historical reported COVID-19 cases from the archived Johns Hopkins CSSE dataset.</p></header>
+<main>
+<!-- Compatibility controls used by the shared-parameter JavaScript. -->
+<input id="beta" type="hidden" value="0.30"><span id="betaLabel" hidden>0.30</span>
+<div class="toolbar">
+ <button id="play">▶ Play</button><button id="step" class="secondary">Step +1 day</button><button id="reset" class="secondary">Reset all</button>
+ <span class="control">Day <strong id="dayLabel">0</strong> / 160</span>
+ <span class="control">Shared parameters are adjustable inside Views 2 and 4</span>
+</div>
+<div class="grid">
+<section class="card"><h2>View 1 — Meet the population</h2><p class="purpose">Question: Who can become infected? Each dot represents a person in a 200-person illustration of the population state.</p><div class="metrics"><div class="metric"><span>Susceptible</span><strong id="s1">199</strong></div><div class="metric"><span>Infectious</span><strong id="i1">1</strong></div><div class="metric"><span>Recovered/removed</span><strong id="r1">0</strong></div></div><div id="people" class="population" aria-label="Illustrative people by SIR state"></div><p class="legend">Blue = susceptible · red = infectious · green = recovered/removed. Dot counts are rescaled from the model population N=10,000.</p><label class="control">Inspect population day <input id="view1DaySlider" type="range" min="0" max="160" step="1" value="0"> <strong id="view1DayLabel">0</strong></label></section>
+<section class="card"><h2>View 2 — From contact to transmission</h2><p class="purpose">Question: How does an infectious person generate new infections? β controls transmission pressure; this schematic updates with β and current infectious share.</p><div class="network"><div class="node i">Infectious<br><strong id="contactsI">1</strong></div><div class="arrow">→</div><div class="node s">Susceptible<br><strong id="contactsS">199</strong></div></div><div class="metrics"><div class="metric"><span>R₀ = β / γ</span><strong id="r0">3.00</strong></div><div class="metric"><span>Expected new infections/day at current state</span><strong id="newInf">3.0</strong></div></div><p class="small">This is a model-based expected rate, not a count of real contact events.</p></section>
+<section class="card wide"><h2>View 3 — The outbreak curve</h2><p class="purpose">Question: Why can infections rise, peak, and then decline? Play or step through model time; all three state variables are plotted.</p><canvas id="curve" height="100"></canvas><div class="toolbar"><label class="control">Inspect day <input id="daySlider" type="range" min="0" max="160" step="1" value="0"> <strong id="daySliderLabel">0</strong></label></div><div class="metrics"><div class="metric"><span>Current S</span><strong id="curS">9990</strong></div><div class="metric"><span>Current I</span><strong id="curI">10</strong></div><div class="metric"><span>Current R</span><strong id="curR">0</strong></div><div class="metric"><span>Peak infectious</span><strong id="peak">—</strong></div></div></section>
+<section class="card"><h2>View 4 — Why does the peak change?</h2><p class="purpose">Question: What happens when transmission or recovery changes? The shared β and γ sliders recompute the full trajectory.</p><canvas id="parameterChart" height="150"></canvas><div class="toolbar"><label class="control">Transmission β <input id="beta4" type="range" min="0" max="0.8" step="0.01" value="0.30"> <strong id="beta4Label">0.30</strong> day⁻¹</label><label class="control">Recovery γ <input id="gamma" type="range" min="0.03" max="0.3" step="0.01" value="0.10"> <strong id="gammaLabel">0.10</strong> day⁻¹</label></div><p class="small">The early-growth tendency is stronger when R₀=β/γ is larger. R₀ is dimensionless; β and γ are rates per day. These controls are shared with Views 2 and 3.</p></section>
+<section class="card"><h2>View 5 — Compare scenarios</h2><p class="purpose">Question: Which parameter settings lead to different outcomes? Select scenarios to compare peak infectious population and timing.</p><div class="checklist" id="scenarioChecks"><label><input type="checkbox" value="baseline" checked> Baseline</label><label><input type="checkbox" value="high" checked> Higher β</label><label><input type="checkbox" value="low" checked> Lower β</label><label><input type="checkbox" value="fast" checked> Faster recovery</label></div><canvas id="scenarioChart" height="150"></canvas><div class="tablewrap"><table><thead><tr><th>Scenario</th><th>β/day</th><th>γ/day</th><th>Peak I</th><th>Peak day</th><th>Final R</th></tr></thead><tbody id="scenarioTable"></tbody></table></div></section>
+<section class="card wide"><h2>View 6 — Model vs. evidence</h2><p class="purpose">Question: How does a simple model compare with historical reported case counts? View 6 loads real county-level confirmed-case records and aggregates them by the selected state; the SIR curve is not calibrated to the observations.</p><div class="toolbar"><label class="control">State <select id="region"><option>New Jersey</option><option>New York</option><option>California</option></select></label><label class="control">Start date <select id="startDate"><option value="2020-03-01">Mar 1, 2020</option><option value="2020-05-01">May 1, 2020</option><option value="2021-01-01">Jan 1, 2021</option><option value="2021-07-01">Jul 1, 2021</option></select></label><label class="control">Display window <select id="window"><option value="all">160 days</option><option value="early">First 60 days</option><option value="late">Days 60–160</option></select></label><button id="loadCovid" class="secondary">Reload real data</button></div><p id="covidStatus" class="small">Loading real reported COVID-19 cases from the archived Johns Hopkins CSSE dataset…</p><canvas id="realityChart" height="90"></canvas><p id="insight" class="status">The model is not fitted to the reported data; compare shape cautiously.</p><p class="small">Observed series: daily confirmed cases per 100,000 residents, shown as a 7-day moving average. SIR series: simulated new infections per 100,000 per day. These are different measures and the SIR parameters are not fitted to the observed series. Source: <a href="https://github.com/CSSEGISandData/COVID-19" target="_blank" rel="noreferrer">JHU CSSE COVID-19 repository</a> (archived March 10, 2023).</p></section>
+</div>
+<div class="foot"><strong>Model note:</strong> dS/dt = −βSI/N; dI/dt = βSI/N − γI; dR/dt = γI. Assumptions: homogeneous mixing, constant population, fixed rates per scenario, and no explicit age structure, vaccination, behavior changes, or exposed/asymptomatic compartments. Euler integration uses a 1-day step. This is an educational simulation, not a forecasting tool.</div>
+</main>
+<script>
+const N=10000, days=160, dt=1, initial={S:9990,I:10,R:0};
+const covidPop={"New Jersey":9288994,"New York":20201249,"California":39538223};
+let covidRows=[], covidLoaded=false;
+let day=0, playing=false, timer=null;
+const $=id=>document.getElementById(id);
+function simulate(beta,gamma){
+ let a=[{day:0,...initial}], S=initial.S,I=initial.I,R=initial.R;
+ for(let d=1;d<=days;d++){let inf=beta*S*I/N, rec=gamma*I; S-=inf*dt;I+=(inf-rec)*dt;R+=rec*dt; a.push({day:d,S,I,R});}
+ return a;
+}
+function summarize(a,b,g){let peak=a.reduce((x,y)=>y.I>x.I?y:x,a[0]);return {b,g,peak:peak.I,peakDay:peak.day,finalR:a[a.length-1].R,series:a};}
+function params(){return {b:+$('beta').value,g:+$('gamma').value}}
+function fmt(x){return Math.round(x).toLocaleString('en-US')}
+function chart(id, datasets, maxDays=days){
+ let ch=charts[id]; ch.data.datasets=datasets; ch.options.scales.x.max=maxDays; ch.update();
+}
+const common={responsive:true,animation:false,interaction:{mode:'index',intersect:false},plugins:{legend:{position:'bottom'}},scales:{x:{type:'linear',title:{display:true,text:'Time (days from selected start)'}},y:{title:{display:true,text:'People'}}}};
+const charts={
+ curve:new Chart($('curve'),{type:'line',data:{datasets:[]},options:structuredClone(common)}),
+ parameterChart:new Chart($('parameterChart'),{type:'line',data:{datasets:[]},options:structuredClone(common)}),
+ scenarioChart:new Chart($('scenarioChart'),{type:'line',data:{datasets:[]},options:structuredClone(common)}),
+ realityChart:new Chart($('realityChart'),{type:'line',data:{datasets:[]},options:structuredClone(common)})
+};
+function ds(a,key,label,color,extra={}){return {label,data:a.map(p=>({x:p.day,y:p[key]})),borderColor:color,backgroundColor:color,pointRadius:extra.pointRadius??0,borderWidth:2,showLine:extra.showLine??true,tension:0.15}}
+function mainUpdate(){
+ const {b,g}=params(), a=simulate(b,g), p=a[day], sm=summarize(a,b,g);
+ $('betaLabel').textContent=b.toFixed(2);$('gammaLabel').textContent=g.toFixed(2);$('dayLabel').textContent=day;$('daySlider').value=day;$('daySliderLabel').textContent=day;$('view1DaySlider').value=day;$('view1DayLabel').textContent=day;$('beta4Label').textContent=b.toFixed(2);
+ $('r0').textContent=(b/g).toFixed(2);$('newInf').textContent=(b*p.S*p.I/N).toFixed(2);
+ $('curS').textContent=fmt(p.S);$('curI').textContent=fmt(p.I);$('curR').textContent=fmt(p.R);
+ $('peak').textContent=`${fmt(sm.peak)} on day ${sm.peakDay}`;
+ $('s1').textContent=fmt(p.S/N*200);$('i1').textContent=fmt(p.I/N*200);$('r1').textContent=fmt(p.R/N*200);
+ $('contactsI').textContent=fmt(p.I/N*200);$('contactsS').textContent=fmt(p.S/N*200);
+ const states=[]; for(let i=0;i<200;i++){let q=(i+.5)/200, si=p.S/N, ii=p.I/N;states.push(q<si?'s':q<si+ii?'i':'r')}
+ // deterministically shuffle for a more population-like layout
+ states.sort((x,y)=>((x==='i'?0:x==='s'?1:2)-(y==='i'?0:y==='s'?1:2)) + (Math.sin(states.indexOf(x)+1)-Math.sin(states.indexOf(y)+1))*.00001);
+ $('people').innerHTML=states.map(s=>`<span class="person ${s==='i'?'i':s==='r'?'r':''}"></span>`).join('');
+ chart('curve',[ds(a,'S','Susceptible','#4c78a8'),ds(a,'I','Infectious','#e45756'),ds(a,'R','Recovered / removed','#54a24b')]);
+ const bHigh=Math.min(.8,b+.18), bLow=Math.max(0,b-.15), gFast=Math.min(.3,g+.07);
+ chart('parameterChart',[ds(a,'I',`Current β=${b.toFixed(2)}, γ=${g.toFixed(2)}`,'#e45756'),ds(simulate(bHigh,g),'I',`Higher β=${bHigh.toFixed(2)}`,'#f2a541'),ds(simulate(b,gFast),'I',`Faster γ=${gFast.toFixed(2)}`,'#54a24b')]);
+ updateScenarios(); updateReality(a);
+}
+function updateScenarios(){
+ const {b,g}=params(), raw=[
+ ['baseline', 'Baseline',b,g,'#4c78a8'],
+ ['high','Higher β',Math.min(.8,b+.18),g,'#e45756'],
+ ['low','Lower β',Math.max(0,b-.15),g,'#54a24b'],
+ ['fast','Faster recovery',b,Math.min(.3,g+.07),'#f2a541']];
+ const selected=[...document.querySelectorAll('#scenarioChecks input:checked')].map(x=>x.value);
+ let datasets=[],rows=[];
+ raw.forEach(([id,name,bb,gg,color])=>{let z=summarize(simulate(bb,gg),bb,gg);if(selected.includes(id))datasets.push(ds(z.series,'I',name,color));rows.push(`<tr><td>${name}</td><td>${bb.toFixed(2)}</td><td>${gg.toFixed(2)}</td><td>${fmt(z.peak)}</td><td>${z.peakDay}</td><td>${fmt(z.finalR)}</td></tr>`)});
+ chart('scenarioChart',datasets);$('scenarioTable').innerHTML=rows.join('');
+}
+async function loadCovidData(){
+ const status=$('covidStatus'); status.textContent='Loading JHU CSSE confirmed-case data…';
+ const url='https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv';
+ try {
+   const response=await fetch(url); if(!response.ok) throw new Error('HTTP '+response.status);
+   const csv=await response.text();
+   const parsed=Papa.parse(csv,{header:true,skipEmptyLines:true,dynamicTyping:false});
+   if(parsed.errors && parsed.errors.length) console.warn('CSV parse warnings',parsed.errors.slice(0,3));
+   covidRows=parsed.data; covidLoaded=true;
+   status.textContent=`Loaded ${covidRows.length.toLocaleString()} county-level rows from the archived JHU CSSE U.S. confirmed-case time series. State totals are summed across counties.`;
+   mainUpdate();
+ } catch(e){
+   covidLoaded=false; status.textContent='Could not load the real JHU dataset in this browser (network/CORS issue). Check internet access or download the CSV and serve the project locally. Error: '+e.message;
+   chart('realityChart',[]);
+ }
+}
+function getObservedDaily(region,startDate){
+ if(!covidLoaded) return [];
+ const rows=covidRows.filter(r=>r.Province_State===region && r.Country_Region==='US');
+ if(!rows.length) return [];
+ const dateCols=Object.keys(rows[0]).filter(k=>/^\d{1,2}\/\d{1,2}\/\d{2}$/.test(k));
+ const sums=dateCols.map(k=>({date:new Date(k), cumulative:rows.reduce((sum,r)=>sum+(Number(r[k])||0),0)})).sort((a,b)=>a.date-b.date);
+ const start=new Date(startDate+'T00:00:00');
+ const raw=[];
+ for(let i=1;i<sums.length;i++){
+   const d=sums[i].date; if(d<start) continue;
+   const prev=sums[i-1].cumulative, curr=sums[i].cumulative;
+   // Negative revisions are retained as missing rather than recoded to zero.
+   raw.push({date:d, day:Math.round((d-start)/86400000), value:curr-prev>=0?curr-prev:null});
+ }
+ const subset=raw.filter(x=>x.day>=0&&x.day<=days);
+ return subset.map((x,i)=>{let vals=subset.slice(Math.max(0,i-6),i+1).map(y=>y.value).filter(v=>v!==null);return {...x, rate:vals.length===7?vals.reduce((a,b)=>a+b,0)/7/covidPop[region]*100000:null};});
+}
+function updateReality(current){
+ const region=$('region').value, startDate=$('startDate').value;
+ const observed=getObservedDaily(region,startDate);
+ const lo=$('window').value==='early'?0:$('window').value==='late'?60:0;
+ const hi=$('window').value==='early'?60:days;
+ const model=current.map((p,i)=>({day:p.day, rate:(i===0?0:params().b*current[i-1].S*current[i-1].I/N)/N*100000})).filter(p=>p.day>=lo&&p.day<=hi);
+ const obs=observed.filter(p=>p.day>=lo&&p.day<=hi&&p.rate!==null);
+ const modelDS={label:'SIR simulated new infections / 100k / day',data:model.map(p=>({x:p.day,y:p.rate})),borderColor:'#e45756',backgroundColor:'#e45756',pointRadius:0,borderWidth:2,tension:.15};
+ const obsDS={label:`${region}: reported new cases / 100k / day (7-day average)`,data:obs.map(p=>({x:p.day,y:p.rate})),borderColor:'#4c78a8',backgroundColor:'#4c78a8',pointRadius:2,borderWidth:1,showLine:true,tension:.1};
+ chart('realityChart',[modelDS,obsDS],hi); charts.realityChart.options.scales.x.min=lo; charts.realityChart.options.scales.y.title.text='Daily events per 100,000 people'; charts.realityChart.update();
+ const dateLabel=new Date(startDate+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+ if(covidLoaded && obs.length){$('insight').textContent=`Real reported case data loaded for ${region}, beginning ${dateLabel}. The SIR curve is a simple, uncalibrated simulation; differences may reflect both model assumptions and reporting/testing changes.`;}
+ else if(covidLoaded){$('insight').textContent=`No usable daily records found for ${region} in the selected window. Choose another state or start date.`;}
+ else {$('insight').textContent='Waiting for the real JHU CSSE dataset. The chart will not substitute synthetic observations if loading fails.';}
+}
+
+function setDay(d){day=Math.max(0,Math.min(days,d));mainUpdate()}
+function stop(){playing=false;if(timer)clearInterval(timer);timer=null;$('play').textContent='▶ Play'}
+$('daySlider').addEventListener('input',()=>{stop();setDay(+$('daySlider').value)});$('view1DaySlider').addEventListener('input',()=>{stop();setDay(+$('view1DaySlider').value)});
+$('beta4').addEventListener('input',()=>{$('beta').value=$('beta4').value;mainUpdate()});
+$('beta').addEventListener('input',()=>{$('beta4').value=$('beta').value;mainUpdate()});
+$('region').addEventListener('change',()=>mainUpdate());$('startDate').addEventListener('change',()=>mainUpdate());$('loadCovid').addEventListener('click',loadCovidData);
+$('play').onclick=()=>{if(playing){stop();return}playing=true;$('play').textContent='Ⅱ Pause';timer=setInterval(()=>{if(day>=days){stop();return}setDay(day+1)},120)};
+$('step').onclick=()=>{stop();setDay(day+1)};
+$('reset').onclick=()=>{stop();$('beta').value=.30;$('beta4').value=.30;$('gamma').value=.10;$('window').value='all';document.querySelectorAll('#scenarioChecks input').forEach(x=>x.checked=true);setDay(0)};
+['beta','gamma'].forEach(id=>$(id).addEventListener('input',()=>mainUpdate()));
+['window','region','startDate'].forEach(id=>$(id).addEventListener('change',()=>mainUpdate()));
+$('scenarioChecks').addEventListener('change',updateScenarios);
+mainUpdate();loadCovidData();
+</script>
+</body></html>
